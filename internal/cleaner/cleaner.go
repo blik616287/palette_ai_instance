@@ -44,7 +44,6 @@ type Request struct {
 	// Per-component opt-outs (full + reset levels). The hub release (mural +
 	// mural-crds) is always cleaned because it's what `cleanup` is for.
 	KeepCertManager bool
-	KeepFlux        bool
 	KeepQueue       bool
 	NamespaceWait   time.Duration // per-namespace WaitForNamespaceGone deadline
 }
@@ -90,7 +89,6 @@ func (c *Cleaner) plan() []releaseSpec {
 		{name: "mural", namespace: "mural-system"},
 		{name: "mural-crds", namespace: "mural-system"},
 		{name: "queue", namespace: "messaging", skip: func(r *Request) bool { return r.KeepQueue }},
-		{name: "flux2", namespace: "flux-system", skip: func(r *Request) bool { return r.KeepFlux }},
 		{name: "cert-manager", namespace: "cert-manager", skip: func(r *Request) bool { return r.KeepCertManager }},
 	}
 }

@@ -40,9 +40,6 @@ type DeployDefaults struct {
 	CertManagerVersion             string        `yaml:"cert-manager-version,omitempty"`
 	CertManagerValuesFile          string        `yaml:"cert-manager-values-file,omitempty"`
 	CertManagerSkipCreateNamespace bool          `yaml:"cert-manager-no-create-ns,omitempty"`
-	FluxChartURI                   string        `yaml:"flux-chart-uri,omitempty"`
-	FluxVersion                    string        `yaml:"flux-version,omitempty"`
-	FluxValuesFile                 string        `yaml:"flux-values-file,omitempty"`
 	QueueChartURI                  string        `yaml:"queue-chart-uri,omitempty"`
 	QueueVersion                   string        `yaml:"queue-version,omitempty"`
 	QueueValuesFile                string        `yaml:"queue-values-file,omitempty"`
@@ -158,8 +155,6 @@ func resolveDeployPaths(baseDir string, d *DeployDefaults) {
 	d.CRDsChartURI = resolvePath(baseDir, d.CRDsChartURI)
 	d.CertManagerChartURI = resolvePath(baseDir, d.CertManagerChartURI)
 	d.CertManagerValuesFile = resolvePath(baseDir, d.CertManagerValuesFile)
-	d.FluxChartURI = resolvePath(baseDir, d.FluxChartURI)
-	d.FluxValuesFile = resolvePath(baseDir, d.FluxValuesFile)
 	d.QueueChartURI = resolvePath(baseDir, d.QueueChartURI)
 	d.QueueValuesFile = resolvePath(baseDir, d.QueueValuesFile)
 }

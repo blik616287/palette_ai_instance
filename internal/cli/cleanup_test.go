@@ -39,7 +39,6 @@ func TestBuildCleanupRequest_NormalizesAndPropagatesAllFlags(t *testing.T) {
 		configPath:      "x",
 		level:           "  RESET  ",
 		keepCertManager: true,
-		keepFlux:        true,
 		keepQueue:       false,
 		namespaceWait:   45 * time.Second,
 	}
@@ -48,7 +47,7 @@ func TestBuildCleanupRequest_NormalizesAndPropagatesAllFlags(t *testing.T) {
 	if req.Level != cleaner.LevelReset {
 		t.Fatalf("level not normalized: %q", req.Level)
 	}
-	if !req.KeepCertManager || !req.KeepFlux || req.KeepQueue {
+	if !req.KeepCertManager || req.KeepQueue {
 		t.Fatalf("keep-* flags not propagated: %+v", req)
 	}
 	if req.NamespaceWait != 45*time.Second {
@@ -84,7 +83,6 @@ func TestCleanupCmd_RunnerInvokedWithParsedRequest(t *testing.T) {
 		"--cluster-name", "local",
 		"--level", "reset",
 		"--keep-cert-manager",
-		"--keep-flux",
 		"--keep-queue",
 		"--namespace-wait", "30s",
 	})
@@ -92,7 +90,7 @@ func TestCleanupCmd_RunnerInvokedWithParsedRequest(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	if got.ClusterName != "local" || got.Level != cleaner.LevelReset ||
-		!got.KeepCertManager || !got.KeepFlux || !got.KeepQueue ||
+		!got.KeepCertManager || !got.KeepQueue ||
 		got.NamespaceWait != 30*time.Second {
 		t.Fatalf("request not parsed correctly: %+v", got)
 	}
@@ -194,7 +192,7 @@ func TestNewCleanupCmd_HasAllFlags(t *testing.T) {
 	cmd := NewCleanupCmd(io.Discard, io.Discard)
 	for _, name := range []string{
 		"config", "cluster-name", "level",
-		"keep-cert-manager", "keep-flux", "keep-queue", "namespace-wait",
+		"keep-cert-manager", "keep-queue", "namespace-wait",
 	} {
 		if cmd.Flag(name) == nil {
 			t.Fatalf("flag %q not registered", name)

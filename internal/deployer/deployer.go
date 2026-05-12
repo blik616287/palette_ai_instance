@@ -38,13 +38,6 @@ type Request struct {
 	// bundles its own Namespace as a pre-install hook.
 	CertManagerSkipCreateNamespace bool
 	CRDsVersion                    string
-	// FluxChartURI, when set, installs upstream flux2 into flux-system
-	// before CRDs+mural. PaletteAI uses Flux's helm/source controllers to
-	// queue its sub-chart reconciliations; installing flux out-of-band
-	// lets operators tune it independently from the mural release.
-	FluxChartURI   string
-	FluxVersion    string
-	FluxValuesFile string
 	// QueueChartURI, when set, installs a durable-but-simple messaging
 	// queue (e.g. Bitnami RabbitMQ, nats-io/nats with JetStream) into the
 	// `messaging` namespace before CRDs+mural. Used by PaletteAI workloads
@@ -67,8 +60,6 @@ const (
 	crdsReleaseName        = "mural-crds"
 	certManagerReleaseName = "cert-manager"
 	certManagerNamespace   = "cert-manager"
-	fluxReleaseName        = "flux2"
-	fluxNamespace          = "flux-system"
 	queueReleaseName       = "queue"
 	queueNamespace         = "messaging"
 	defaultTimeout         = 20 * time.Minute
@@ -131,23 +122,6 @@ func (d *Deployer) Deploy(ctx context.Context, req Request) error {
 			CreateNS:    !req.CertManagerSkipCreateNamespace,
 		}); err != nil {
 			return fmt.Errorf("install %s: %w", certManagerReleaseName, err)
-		}
-	}
-
-	if req.FluxChartURI != "" {
-		// Flux installs into flux-system and gives PaletteAI's helm
-		// reconciliations an out-of-band queue (Source/Helm controllers).
-		if err := d.installChart(ctx, cluster, helm.InstallOptions{
-			ReleaseName: fluxReleaseName,
-			Namespace:   fluxNamespace,
-			ChartURI:    req.FluxChartURI,
-			Version:     req.FluxVersion,
-			ValuesFile:  req.FluxValuesFile,
-			Wait:        true,
-			Timeout:     timeout,
-			CreateNS:    true,
-		}); err != nil {
-			return fmt.Errorf("install %s: %w", fluxReleaseName, err)
 		}
 	}
 

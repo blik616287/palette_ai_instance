@@ -146,7 +146,7 @@ func TestDeploy_HappyWithCertManagerAndCRDs(t *testing.T) {
 	}
 }
 
-func TestDeploy_HappyFullStack_CertManagerFluxQueueCRDsMural(t *testing.T) {
+func TestDeploy_HappyFullStack_CertManagerQueueCRDsMural(t *testing.T) {
 	h := &fakeInstaller{}
 	d := deployer.New(h, nil)
 	d.ConfigLoader = okLoader
@@ -158,9 +158,6 @@ func TestDeploy_HappyFullStack_CertManagerFluxQueueCRDsMural(t *testing.T) {
 		CRDsVersion:         "0.7.1",
 		CertManagerChartURI: "oci://example/cert-manager",
 		CertManagerVersion:  "1.19.3",
-		FluxChartURI:        "oci://example/flux2",
-		FluxVersion:         "2.13.0",
-		FluxValuesFile:      "flux-values.yaml",
 		QueueChartURI:       "oci://example/rabbitmq",
 		QueueVersion:        "14.6.6",
 		QueueValuesFile:     "queue-values.yaml",
@@ -170,7 +167,6 @@ func TestDeploy_HappyFullStack_CertManagerFluxQueueCRDsMural(t *testing.T) {
 	}
 	wantOrder := []struct{ name, ns string }{
 		{"cert-manager", "cert-manager"},
-		{"flux2", "flux-system"},
 		{"queue", "messaging"},
 		{"mural-crds", "mural-system"},
 		{"mural", "mural-system"},
@@ -186,7 +182,6 @@ func TestDeploy_HappyFullStack_CertManagerFluxQueueCRDsMural(t *testing.T) {
 	}
 	wantVersion := map[string]string{
 		"cert-manager": "1.19.3",
-		"flux2":        "2.13.0",
 		"queue":        "14.6.6",
 		"mural-crds":   "0.7.1",
 	}
@@ -194,25 +189,6 @@ func TestDeploy_HappyFullStack_CertManagerFluxQueueCRDsMural(t *testing.T) {
 		if want, ok := wantVersion[c.ReleaseName]; ok && c.Version != want {
 			t.Errorf("release %s version: got %q want %q", c.ReleaseName, c.Version, want)
 		}
-	}
-}
-
-func TestDeploy_FluxErrorStopsBeforeQueue(t *testing.T) {
-	h := &fakeInstaller{err: errors.New("flux boom"), errOnce: "flux2"}
-	d := deployer.New(h, nil)
-	d.ConfigLoader = okLoader
-
-	err := d.Deploy(context.Background(), deployer.Request{
-		ClusterName:   "local",
-		ChartURI:      "oci://example/mural",
-		FluxChartURI:  "oci://example/flux2",
-		QueueChartURI: "oci://example/rabbitmq",
-	})
-	if err == nil {
-		t.Fatal("expected error from flux install")
-	}
-	if len(h.calls) != 1 || h.calls[0].ReleaseName != "flux2" {
-		t.Fatalf("expected to stop after flux failure, got %+v", h.calls)
 	}
 }
 

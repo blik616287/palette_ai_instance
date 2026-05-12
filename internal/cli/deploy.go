@@ -30,9 +30,6 @@ type deployFlags struct {
 	certManagerValuesFile          string
 	certManagerSkipCreateNamespace bool
 	crdsVersion                    string
-	fluxChartURI                   string
-	fluxVersion                    string
-	fluxValuesFile                 string
 	queueChartURI                  string
 	queueVersion                   string
 	queueValuesFile                string
@@ -80,9 +77,6 @@ func newDeployCmd(out, errOut io.Writer, run deployRunner) *cobra.Command {
 	flags.StringVar(&f.certManagerVersion, "cert-manager-version", "", "version of the cert-manager chart (OCI/repo refs only)")
 	flags.StringVar(&f.certManagerValuesFile, "cert-manager-values-file", "", "values file for the cert-manager install")
 	flags.BoolVar(&f.certManagerSkipCreateNamespace, "cert-manager-no-create-ns", false, "skip helm --create-namespace for cert-manager (use when the chart ships its own Namespace, e.g. Spectro FIPS)")
-	flags.StringVar(&f.fluxChartURI, "flux-chart-uri", "", "optional: URI of the flux2 chart, installed into flux-system before CRDs+mural so PaletteAI can use Flux for helm queueing")
-	flags.StringVar(&f.fluxVersion, "flux-version", "", "version of the flux2 chart (OCI/repo refs only)")
-	flags.StringVar(&f.fluxValuesFile, "flux-values-file", "", "values file for the flux2 install")
 	flags.StringVar(&f.queueChartURI, "queue-chart-uri", "", "optional: URI of a durable-but-simple messaging-queue chart (e.g. Bitnami RabbitMQ, NATS JetStream), installed into the messaging namespace before CRDs+mural")
 	flags.StringVar(&f.queueVersion, "queue-version", "", "version of the messaging-queue chart (OCI/repo refs only)")
 	flags.StringVar(&f.queueValuesFile, "queue-values-file", "", "values file for the messaging-queue install")
@@ -158,9 +152,6 @@ func mergeDeployRequest(changed flagSetCheck, f *deployFlags, cluster *config.Cl
 		CertManagerVersion:             pickStr(changed, "cert-manager-version", f.certManagerVersion, d.CertManagerVersion),
 		CertManagerValuesFile:          pickStr(changed, "cert-manager-values-file", f.certManagerValuesFile, d.CertManagerValuesFile),
 		CertManagerSkipCreateNamespace: pickBool(changed, "cert-manager-no-create-ns", f.certManagerSkipCreateNamespace, d.CertManagerSkipCreateNamespace),
-		FluxChartURI:                   pickStr(changed, "flux-chart-uri", f.fluxChartURI, d.FluxChartURI),
-		FluxVersion:                    pickStr(changed, "flux-version", f.fluxVersion, d.FluxVersion),
-		FluxValuesFile:                 pickStr(changed, "flux-values-file", f.fluxValuesFile, d.FluxValuesFile),
 		QueueChartURI:                  pickStr(changed, "queue-chart-uri", f.queueChartURI, d.QueueChartURI),
 		QueueVersion:                   pickStr(changed, "queue-version", f.queueVersion, d.QueueVersion),
 		QueueValuesFile:                pickStr(changed, "queue-values-file", f.queueValuesFile, d.QueueValuesFile),

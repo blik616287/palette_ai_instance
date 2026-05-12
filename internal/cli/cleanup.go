@@ -21,7 +21,6 @@ type cleanupFlags struct {
 	clusterName     string
 	level           string
 	keepCertManager bool
-	keepFlux        bool
 	keepQueue       bool
 	namespaceWait   time.Duration
 }
@@ -67,8 +66,6 @@ func newCleanupCmd(out, errOut io.Writer, run cleanupRunner) *cobra.Command {
 		"teardown level: uninstall | full | reset")
 	flags.BoolVar(&f.keepCertManager, "keep-cert-manager", false,
 		"don't uninstall cert-manager (use when it's shared with other tenants)")
-	flags.BoolVar(&f.keepFlux, "keep-flux", false,
-		"don't uninstall the standalone flux2 release (no-op if it was never installed)")
 	flags.BoolVar(&f.keepQueue, "keep-queue", false,
 		"don't uninstall the messaging-queue release")
 	flags.DurationVar(&f.namespaceWait, "namespace-wait", 3*time.Minute,
@@ -113,7 +110,6 @@ func buildCleanupRequest(f *cleanupFlags, cluster *config.Cluster) cleaner.Reque
 		ClusterName:     cluster.Name,
 		Level:           cleaner.Level(strings.ToLower(strings.TrimSpace(f.level))),
 		KeepCertManager: f.keepCertManager,
-		KeepFlux:        f.keepFlux,
 		KeepQueue:       f.keepQueue,
 		NamespaceWait:   f.namespaceWait,
 	}
