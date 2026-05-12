@@ -1,0 +1,8 @@
+bin/
+coverage.out
+*.test
+.cache/
+cluster_config.yaml
+# local_k8s playbooks land the minikube kubeconfig under artifacts/; it
+# embeds cluster credentials so the whole directory is gitignored.
+examples/local_k8s/artifacts/

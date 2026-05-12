@@ -1,0 +1,12 @@
+---
+- name: Tear down local Kubernetes cluster (minikube)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  tasks:
+    - name: Delete minikube cluster
+      ansible.builtin.import_role:
+        name: minikube
+        tasks_from: down

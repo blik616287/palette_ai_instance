@@ -1,0 +1,55 @@
+# Values for the Bitnami RabbitMQ chart:
+#   oci://registry-1.docker.io/bitnamicharts/rabbitmq
+#
+# Tuned for "durable but simple" on a single-node minikube:
+#   - one replica
+#   - persistence enabled (8Gi PVC; minikube's hostPath provisioner satisfies it)
+#   - quorum queues are the durable, simple default (Raft-replicated even
+#     on a single node, no message loss on restart)
+#   - management UI on (handy for verifying queues during dev)
+# Bitnami moved tagged images from docker.io/bitnami/* to docker.io/bitnamilegacy/*
+# in mid-2025. Without this override, image pulls fail with "manifest unknown".
+image:
+  registry: docker.io
+  repository: bitnamilegacy/rabbitmq
+volumePermissions:
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/os-shell
+
+auth:
+  username: paletteai
+  # Override on the CLI for non-dev: --set auth.password=<strong>.
+  password: paletteai-dev
+  # Erlang cookie pins the cluster identity across restarts. Override for
+  # multi-instance setups.
+  erlangCookie: minikube-paletteai-erlang-cookie
+
+replicaCount: 1
+
+clustering:
+  enabled: false
+
+persistence:
+  enabled: true
+  storageClass: standard  # minikube's default hostPath provisioner
+  size: 8Gi
+
+# Quorum queues replicate via Raft for durability even at replicaCount=1
+# (the log is fsync'd to disk on every write). Set the default queue type
+# so producers don't have to pass `x-queue-type=quorum` on each declare.
+extraConfiguration: |-
+  default_queue_type = quorum
+  cluster_partition_handling = pause_minority
+
+metrics:
+  enabled: false
+
+# Reasonable footprint on minikube.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
