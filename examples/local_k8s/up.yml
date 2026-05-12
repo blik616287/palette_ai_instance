@@ -1,0 +1,12 @@
+---
+- name: Create local Kubernetes cluster (minikube, docker driver)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  tasks:
+    - name: Bring up minikube cluster
+      ansible.builtin.import_role:
+        name: minikube
+        tasks_from: up

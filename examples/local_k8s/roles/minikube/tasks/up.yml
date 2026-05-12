@@ -1,0 +1,88 @@
+---
+# =============================================================================
+# Tooling preflight
+# =============================================================================
+- name: Check docker daemon is reachable
+  ansible.builtin.command: docker info
+  register: docker_info
+  failed_when: docker_info.rc != 0
+  changed_when: false
+
+- name: Check for minikube binary
+  ansible.builtin.command: which minikube
+  register: minikube_check
+  failed_when: minikube_check.rc != 0
+  changed_when: false
+
+- name: Check for kubectl binary
+  ansible.builtin.command: which kubectl
+  register: kubectl_check
+  failed_when: kubectl_check.rc != 0
+  changed_when: false
+
+# =============================================================================
+# Ensure the directory for the local kubeconfig exists. `minikube start`
+# will create the file itself (KUBECONFIG is exported at play level).
+# =============================================================================
+- name: Ensure kubeconfig parent directory exists
+  ansible.builtin.file:
+    path: "{{ local_kubeconfig_path | dirname }}"
+    state: directory
+    mode: "0755"
+
+# =============================================================================
+# Idempotent start: only call `minikube start` if Host != Running.
+# `minikube start` on a stopped profile resumes it, so we don't need to
+# distinguish between "stopped" and "doesn't exist" here.
+# =============================================================================
+- name: Get current status of minikube profile
+  ansible.builtin.command: minikube status -p {{ minikube_profile }} -o json
+  register: minikube_status
+  failed_when: false
+  changed_when: false
+
+- name: Determine whether cluster is already running
+  ansible.builtin.set_fact:
+    cluster_running: >-
+      {{ minikube_status.rc == 0
+         and (minikube_status.stdout | from_json).Host | default('') == 'Running' }}
+
+- name: Start minikube cluster
+  ansible.builtin.command: >
+    minikube start
+    --profile {{ minikube_profile }}
+    --driver {{ minikube_driver }}
+    --cpus {{ minikube_cpus }}
+    --memory {{ minikube_memory_mb }}
+    --disk-size {{ minikube_disk_size }}
+    --kubernetes-version {{ minikube_k8s_version }}
+  when: not cluster_running
+  changed_when: true
+
+# =============================================================================
+# Addons + readiness
+# =============================================================================
+- name: Enable minikube addons
+  ansible.builtin.command: minikube addons enable {{ item }} -p {{ minikube_profile }}
+  loop: "{{ minikube_addons }}"
+  when: minikube_addons | length > 0
+  changed_when: true
+
+- name: Wait for all nodes to be Ready
+  ansible.builtin.command: >
+    kubectl --context {{ minikube_profile }}
+    wait --for=condition=Ready nodes --all --timeout=180s
+  changed_when: false
+
+- name: Get cluster node info
+  ansible.builtin.command: kubectl --context {{ minikube_profile }} get nodes -o wide
+  register: node_info
+  changed_when: false
+
+- name: Cluster ready
+  ansible.builtin.debug:
+    msg:
+      - "minikube profile '{{ minikube_profile }}' is running."
+      - "kubeconfig: {{ local_kubeconfig_path }}"
+      - "Use it: export KUBECONFIG={{ local_kubeconfig_path }}"
+      - "{{ node_info.stdout_lines }}"

@@ -1,0 +1,34 @@
+# Values for upstream Jetstack cert-manager (v1.16+).
+#
+# By default the chart skips CRD installation — enable it so cert-manager
+# can manage its own Issuer/Certificate resources.
+crds:
+  enabled: true
+  keep: true
+
+# Tighten the resource footprint for minikube.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+cainjector:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

@@ -1,0 +1,45 @@
+---
+- name: Check for minikube binary
+  ansible.builtin.command: which minikube
+  register: minikube_check
+  failed_when: minikube_check.rc != 0
+  changed_when: false
+
+- name: List minikube profiles
+  ansible.builtin.command: minikube profile list -o json
+  register: profile_list
+  failed_when: false
+  changed_when: false
+
+- name: Determine whether the profile exists
+  ansible.builtin.set_fact:
+    profile_exists: >-
+      {{ minikube_profile in
+         ((profile_list.stdout | from_json).valid | default([])
+          | map(attribute='Name') | list) }}
+  when: profile_list.rc == 0 and profile_list.stdout | length > 0
+
+- name: Delete minikube profile
+  ansible.builtin.command: minikube delete -p {{ minikube_profile }}
+  when: profile_exists | default(false)
+  changed_when: true
+
+# Optional nuclear option: wipes ~/.minikube including cached ISOs/images
+# and any *other* profiles you have. Off by default; enable with
+# `-e minikube_purge=true`.
+- name: Purge all minikube state (--purge --all)
+  ansible.builtin.command: minikube delete --purge --all
+  when: minikube_purge | bool
+  changed_when: true
+
+- name: Remove local kubeconfig file
+  ansible.builtin.file:
+    path: "{{ local_kubeconfig_path }}"
+    state: absent
+
+- name: Teardown summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'minikube profile ' + minikube_profile + ' deleted.'
+         if profile_exists | default(false)
+         else 'No minikube profile named ' + minikube_profile + ' found — nothing to delete.' }}

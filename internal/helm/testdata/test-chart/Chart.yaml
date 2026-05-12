@@ -1,0 +1,5 @@
+apiVersion: v2
+name: test-chart
+version: 0.1.0
+description: Minimal chart for helm SDK unit tests
+type: application

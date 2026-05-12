@@ -1,0 +1,27 @@
+---
+# All values are overridable on the CLI with `-e var=value`.
+minikube_profile: "{{ lookup('env', 'MINIKUBE_PROFILE') | default('local', true) }}"
+minikube_driver: "docker"
+minikube_cpus: "{{ lookup('env', 'MINIKUBE_CPUS') | default('4', true) }}"
+minikube_memory_mb: "{{ lookup('env', 'MINIKUBE_MEMORY_MB') | default('8192', true) }}"
+minikube_disk_size: "{{ lookup('env', 'MINIKUBE_DISK_SIZE') | default('40g', true) }}"
+minikube_k8s_version: "{{ lookup('env', 'MINIKUBE_K8S_VERSION') | default('stable', true) }}"
+
+# Addons to enable after the cluster is up. default-storageclass and
+# storage-provisioner are already on by default in minikube — leave the
+# list empty unless you actually want something extra (e.g. metrics-server).
+minikube_addons: []
+
+# Where to write the kubeconfig. minikube writes to $KUBECONFIG if set, so
+# the playbook exports this path to KUBECONFIG before running `minikube
+# start`. The default lands the file at `artifacts/kubeconfig` next to the
+# playbook (i.e. examples/local_k8s/artifacts/kubeconfig) — exactly where
+# examples/cluster_config.yaml expects it. Override with
+# `-e local_kubeconfig_path=/some/other/path/kubeconfig`.
+# NOTE: this file references certs under ~/.minikube/ by absolute path, so
+# it's usable on this machine but not portable to another host as-is.
+local_kubeconfig_path: "{{ playbook_dir }}/artifacts/kubeconfig"
+
+# Teardown-only knob: when true, run `minikube delete --purge --all` after
+# deleting this profile to also wipe ~/.minikube config + cached ISOs/images.
+minikube_purge: false

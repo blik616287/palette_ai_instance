@@ -1,0 +1,12 @@
+# Single source of truth for toolchain versions.
+# Both the Makefile (via `include .versions`) and the Dockerfile (via
+# --build-arg, driven by the Makefile) read from here. Bumping a version
+# is a one-line change.
+#
+#   ?= keeps existing env var values, so any of these can still be
+#   overridden on the CLI (e.g. `GO_VERSION=1.24.0 make ci`) or in CI
+#   without editing the file.
+
+GO_VERSION             ?= 1.23.4
+ALPINE_VERSION         ?= 3.20
+GOLANGCI_LINT_VERSION  ?= v1.61.0
