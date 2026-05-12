@@ -122,9 +122,6 @@ func TestDeployCmd_RunnerInvokedWithParsedRequest(t *testing.T) {
 		"--crds-chart-uri", "oci://example/mural-crds",
 		"--cert-manager-chart-uri", "oci://example/cert-manager",
 		"--cert-manager-values-file", "cm.yaml",
-		"--flux-chart-uri", "oci://example/flux2",
-		"--flux-version", "2.13.0",
-		"--flux-values-file", "flux.yaml",
 		"--queue-chart-uri", "oci://example/rabbitmq",
 		"--queue-version", "14.6.6",
 		"--queue-values-file", "queue.yaml",
@@ -295,7 +292,6 @@ func TestNewDeployCmd_UsesProductionRunner(t *testing.T) {
 		"cert-manager-chart-uri", "cert-manager-version", "cert-manager-values-file",
 		"cert-manager-no-create-ns",
 		"crds-version",
-		"flux-chart-uri", "flux-version", "flux-values-file",
 		"queue-chart-uri", "queue-version", "queue-values-file",
 		"helm-timeout", "config", "validate", "validate-wait",
 	} {

@@ -113,14 +113,14 @@ func TestCleanup_LevelUninstall_DropsAllReleases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
-	want := []string{"mural", "mural-crds", "queue", "flux2", "cert-manager"}
+	want := []string{"mural", "mural-crds", "queue", "cert-manager"}
 	if got := releaseNames(h.calls); !equal(got, want) {
 		t.Fatalf("uninstall order/list wrong:\n got %v\nwant %v", got, want)
 	}
 }
 
 func TestCleanup_LevelUninstall_SkipsMissingReleases(t *testing.T) {
-	h := &fakeUninstaller{missing: map[string]bool{"flux2": true, "queue": true}}
+	h := &fakeUninstaller{missing: map[string]bool{"queue": true}}
 	c := newCleaner(h, &fakeKube{})
 	err := c.Cleanup(context.Background(), cleaner.Request{
 		ClusterName: "local", Level: cleaner.LevelUninstall,
@@ -128,8 +128,8 @@ func TestCleanup_LevelUninstall_SkipsMissingReleases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
-	if len(h.calls) != 5 {
-		t.Fatalf("expected all 5 to be attempted, got %v", h.calls)
+	if len(h.calls) != 4 {
+		t.Fatalf("expected all 4 (mural, mural-crds, queue, cert-manager) to be attempted, got %v", h.calls)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestCleanup_LevelFull_DeletesNamespacesAndClearsWebhooks(t *testing.T) {
 	h := &fakeUninstaller{}
 	k := &fakeKube{
 		existing: map[string]bool{
-			"mural-system": true, "messaging": true, "flux-system": true, "cert-manager": true,
+			"mural-system": true, "messaging": true, "cert-manager": true,
 		},
 	}
 	c := newCleaner(h, k)
@@ -160,8 +160,8 @@ func TestCleanup_LevelFull_DeletesNamespacesAndClearsWebhooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
-	if len(k.deletes) != 4 {
-		t.Fatalf("expected 4 namespace deletes, got %v", k.deletes)
+	if len(k.deletes) != 3 {
+		t.Fatalf("expected 3 namespace deletes (mural-system, messaging, cert-manager), got %v", k.deletes)
 	}
 	if len(k.delValidating) == 0 || len(k.delMutating) == 0 {
 		t.Fatalf("expected stale webhook deletes: validating=%v mutating=%v",
@@ -221,13 +221,13 @@ func TestCleanup_KeepFlagsHonored(t *testing.T) {
 	c := newCleaner(h, &fakeKube{})
 	err := c.Cleanup(context.Background(), cleaner.Request{
 		ClusterName: "local", Level: cleaner.LevelUninstall,
-		KeepCertManager: true, KeepFlux: true, KeepQueue: true,
+		KeepCertManager: true, KeepQueue: true,
 	})
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
 	for _, c := range h.calls {
-		if c.ReleaseName == "cert-manager" || c.ReleaseName == "flux2" || c.ReleaseName == "queue" {
+		if c.ReleaseName == "cert-manager" || c.ReleaseName == "queue" {
 			t.Fatalf("kept release was still uninstalled: %s", c.ReleaseName)
 		}
 	}

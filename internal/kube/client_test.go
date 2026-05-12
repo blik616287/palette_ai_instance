@@ -227,6 +227,22 @@ func TestDeleteMutatingWebhookConfiguration(t *testing.T) {
 	}
 }
 
+func TestWaitForPodsReady_PodWithoutPodReadyConditionIsNotReady(t *testing.T) {
+	// Covers the bottom return in isPodReady — a Pod whose Status.Conditions
+	// has no PodReady entry at all should be treated as not-ready (the
+	// wait loop times out instead of bailing as "everything Ready").
+	w, cs := newWithFake()
+	_, _ = cs.CoreV1().Pods("ns").Create(context.Background(),
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-condition", Namespace: "ns"},
+			// Intentionally no Status.Conditions.
+		}, metav1.CreateOptions{})
+	_, err := w.WaitForPodsReady(context.Background(), "ns", 150*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("expected ErrTimeout when pod has no PodReady condition, got %v", err)
+	}
+}
+
 func TestWaitForPodsReady_AllReady(t *testing.T) {
 	w, cs := newWithFake()
 	_, _ = cs.CoreV1().Pods("ns").Create(context.Background(), readyPod("a"), metav1.CreateOptions{})

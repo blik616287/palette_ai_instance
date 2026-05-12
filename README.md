@@ -1,9 +1,9 @@
 # palette-ai-instance
 
 Go CLI that drives a full PaletteAI install — `cert-manager` → `mural-crds`
-→ `mural` (+ optional Bitnami RabbitMQ / standalone Flux) — onto any
-Kubernetes cluster via the helm SDK, with a post-install validator that
-prints the public URL it derives from the deployed Ingress + Service.
+→ `mural` (+ optional Bitnami RabbitMQ) — onto any Kubernetes cluster via
+the helm SDK, with a post-install validator that prints the public URL it
+derives from the deployed Ingress + Service.
 
 ---
 
@@ -63,10 +63,9 @@ cluster declared in the file, in order, failing fast on the first error.
 Drives helm in this order, skipping each step whose chart URI is empty:
 
 1. **`cert-manager`** → `cert-manager` namespace
-2. **`flux2`** (optional, standalone) → `flux-system` namespace
-3. **messaging queue** (e.g. Bitnami RabbitMQ) → `messaging` namespace
-4. **`mural-crds`** → cluster namespace
-5. **`mural`** → cluster namespace, with the `fix-nil-values` post-renderer
+2. **messaging queue** (e.g. Bitnami RabbitMQ) → `messaging` namespace
+3. **`mural-crds`** → cluster namespace
+4. **`mural`** → cluster namespace, with the `fix-nil-values` post-renderer
    automatically applied. It rewrites two known chart bugs in flight: empty
    `stringData` fields that render as YAML `nil` (API server rejects them)
    and the missing `serviceName` on the zot StatefulSet.
@@ -91,11 +90,11 @@ Three teardown levels via `--level`:
 
 | Level | What it does |
 |---|---|
-| `uninstall` | Helm-uninstalls `mural` + `mural-crds` (+ queue / flux / cert-manager unless `--keep-*`). Leaves namespaces, cluster-scoped CRDs/ClusterRoles, and webhooks. |
+| `uninstall` | Helm-uninstalls `mural` + `mural-crds` (+ queue / cert-manager unless `--keep-*`). Leaves namespaces, cluster-scoped CRDs/ClusterRoles, and webhooks. |
 | `full` (default) | Above + deletes the namespaces (with a force-finalize escape hatch for stuck-`Terminating` ones — clears `spec.finalizers` via the `/finalize` subresource when a normal delete times out) + clears the three known stale admission webhooks. |
 | `reset` | Skip helm entirely; force-delete namespaces + webhooks. Use when a half-failed release has helm itself jammed mid-rollback. |
 
-Per-component keep flags: `--keep-cert-manager`, `--keep-flux`, `--keep-queue`.
+Per-component keep flags: `--keep-cert-manager`, `--keep-queue`.
 
 ---
 
@@ -125,8 +124,8 @@ clusters:
       validate-wait:            10m
 ```
 
-Full template with every supported field documented:
-[`cluster_config.yaml.example`](cluster_config.yaml.example).
+A complete, working version of this is at
+[`examples/cluster_config.yaml`](examples/cluster_config.yaml).
 
 ---
 
