@@ -28,6 +28,15 @@ type Client interface {
 	DeleteValidatingWebhookConfiguration(ctx context.Context, name string) error
 	DeleteMutatingWebhookConfiguration(ctx context.Context, name string) error
 
+	// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+	// List-by-label methods feed the cleaner's label-selector sweeps, which
+	// replace the hardcoded ancillaryNamespaces + staleWebhooks lists. The
+	// hardcoded lists drift every time the chart adds or renames a resource;
+	// label selectors let the cleaner discover what to clean.
+	ListNamespacesByLabel(ctx context.Context, selector string) ([]string, error)
+	ListValidatingWebhooksByLabel(ctx context.Context, selector string) ([]string, error)
+	ListMutatingWebhooksByLabel(ctx context.Context, selector string) ([]string, error)
+
 	// Validation surface — used by deployer's --validate path. None of these
 	// mutate cluster state; they're read-only / wait-only.
 	WaitForPodsReady(ctx context.Context, namespace string, timeout time.Duration) (PodSummary, error)
@@ -96,11 +105,19 @@ func (c *clientsetWrapper) DeleteNamespace(ctx context.Context, name string) err
 }
 
 // WaitForNamespaceGone polls until Get returns NotFound or the deadline hits.
+//
+// Closes H4 — see reviews/2026-05-15T195833Z-review.md#h4.
+// The derived ctx upper-bounds every API call (including the first), so a
+// hung apiserver can't outrun the overall timeout.
 func (c *clientsetWrapper) WaitForNamespaceGone(ctx context.Context, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
 		exists, err := c.NamespaceExists(ctx, name)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("%w: namespace %q still present after %s", ErrTimeout, name, timeout)
+			}
 			return err
 		}
 		if !exists {
@@ -109,10 +126,12 @@ func (c *clientsetWrapper) WaitForNamespaceGone(ctx context.Context, name string
 		select {
 		case <-time.After(2 * time.Second):
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("%w: namespace %q still present after %s", ErrTimeout, name, timeout)
+			}
 			return ctx.Err()
 		}
 	}
-	return fmt.Errorf("%w: namespace %q still present after %s", ErrTimeout, name, timeout)
 }
 
 // ForceFinalizeNamespace clears spec.finalizers on a stuck Terminating
@@ -155,29 +174,42 @@ func (c *clientsetWrapper) DeleteValidatingWebhookConfiguration(ctx context.Cont
 	return nil
 }
 
-// WaitForPodsReady polls the namespace until every pod reports Ready or the
-// deadline elapses. A "Ready pod" matches `kubectl wait --for=condition=Ready`:
-// PodReady condition == True. Returns the final summary either way; the
-// error is non-nil only when the poll timed out or the API call failed.
+// WaitForPodsReady polls the namespace until every non-terminal pod reports
+// Ready or the deadline elapses.
+//
+// Closes H1 + H4 — see reviews/2026-05-15T195833Z-review.md#h1, …#h4.
+// The derived ctx upper-bounds every API call (including the first), so a
+// hung apiserver can't outrun the overall timeout (H4).
+//
+// "Ready" follows kubectl wait --for=condition=Ready for running pods, and
+// additionally treats pods in PodSucceeded / PodFailed phase as done — they
+// won't satisfy a PodReady=True condition but they also aren't pending. This
+// matters during day-1 helm installs where pre/post-install Hook Jobs leave
+// behind Succeeded pods that would otherwise wedge the wait (H1).
 func (c *clientsetWrapper) WaitForPodsReady(ctx context.Context, namespace string, timeout time.Duration) (PodSummary, error) {
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var last PodSummary
 	for {
 		pods, err := c.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return last, fmt.Errorf("%w: %d/%d pods Ready in %q after %s",
+					ErrTimeout, last.Ready, last.Total, namespace, timeout)
+			}
 			return last, fmt.Errorf("kube: list pods in %q: %w", namespace, err)
 		}
 		last = summarizePods(pods.Items)
 		if last.Total > 0 && len(last.NotReady) == 0 {
 			return last, nil
 		}
-		if time.Now().After(deadline) {
-			return last, fmt.Errorf("%w: %d/%d pods Ready in %q after %s",
-				ErrTimeout, last.Ready, last.Total, namespace, timeout)
-		}
 		select {
 		case <-time.After(3 * time.Second):
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return last, fmt.Errorf("%w: %d/%d pods Ready in %q after %s",
+					ErrTimeout, last.Ready, last.Total, namespace, timeout)
+			}
 			return last, ctx.Err()
 		}
 	}
@@ -196,6 +228,14 @@ func summarizePods(pods []corev1.Pod) PodSummary {
 }
 
 func isPodReady(p *corev1.Pod) bool {
+	// Terminal phases (Succeeded / Failed) don't gate readiness — the pod
+	// has finished its work. Helm pre/post-install Hook Jobs commonly leave
+	// behind Succeeded pods with no PodReady condition; treating them as
+	// not-ready wedges the validate() wait forever.
+	switch p.Status.Phase {
+	case corev1.PodSucceeded, corev1.PodFailed:
+		return true
+	}
 	for _, c := range p.Status.Conditions {
 		if c.Type == corev1.PodReady {
 			return c.Status == corev1.ConditionTrue
@@ -247,4 +287,49 @@ func (c *clientsetWrapper) DeleteMutatingWebhookConfiguration(ctx context.Contex
 		return fmt.Errorf("kube: delete mutatingwebhookconfiguration %q: %w", name, err)
 	}
 	return nil
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+// ListNamespacesByLabel returns namespace names matching the given label
+// selector (e.g. "app.kubernetes.io/part-of=mural"). Empty selector returns
+// every namespace, which the cleaner intentionally avoids — callers should
+// always pass a non-empty selector.
+func (c *clientsetWrapper) ListNamespacesByLabel(ctx context.Context, selector string) ([]string, error) {
+	out, err := c.cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("kube: list namespaces by label %q: %w", selector, err)
+	}
+	names := make([]string, 0, len(out.Items))
+	for _, ns := range out.Items {
+		names = append(names, ns.Name)
+	}
+	return names, nil
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+func (c *clientsetWrapper) ListValidatingWebhooksByLabel(ctx context.Context, selector string) ([]string, error) {
+	out, err := c.cs.AdmissionregistrationV1().ValidatingWebhookConfigurations().
+		List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("kube: list validatingwebhookconfigurations by label %q: %w", selector, err)
+	}
+	names := make([]string, 0, len(out.Items))
+	for _, w := range out.Items {
+		names = append(names, w.Name)
+	}
+	return names, nil
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+func (c *clientsetWrapper) ListMutatingWebhooksByLabel(ctx context.Context, selector string) ([]string, error) {
+	out, err := c.cs.AdmissionregistrationV1().MutatingWebhookConfigurations().
+		List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("kube: list mutatingwebhookconfigurations by label %q: %w", selector, err)
+	}
+	names := make([]string, 0, len(out.Items))
+	for _, w := range out.Items {
+		names = append(names, w.Name)
+	}
+	return names, nil
 }

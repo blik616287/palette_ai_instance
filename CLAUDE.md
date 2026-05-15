@@ -84,6 +84,8 @@ The cleaner also drops **ancillary namespaces** (`managed-cluster-set-*`, `open-
 
 **Test seams.** `cli.deployRunner`/`cleanupRunner` function types let tests swap out the runner; `Deployer.{ConfigLoader,Helm,Kube,Log}` and `Cleaner.{ConfigLoader,Helm,Kube,Log}` are all exposed for substitution; `SDKInstaller.factory` (a `configFactory`) lets installer tests run against an in-memory helm `action.Configuration` without a real cluster. Prefer using these seams over invoking a real helm SDK in new tests.
 
+**Test-package convention (M7 from the 2026-05-15 review).** Default to external `package foo_test` for new test files — that's the canonical Go pattern (tests must compile against the public API). Promote to internal `package foo` only when the test genuinely needs unexported access (e.g. `package helm` for tests that call `loadValues`, `releaseExists`, or `defaultConfigFactory`; `package kube` for `clientsetWrapper`-touching tests). The `helm` package legitimately has both shapes today and that's correct, not inconsistent.
+
 ## Production binary
 
 `make build` produces a **statically linked** binary (`CGO_ENABLED=0`, `-ldflags=-extldflags=-static`). Tests build with `CGO_ENABLED=1` so the race detector works — that's intentional. Verify production builds with `file bin/palette-ai-instance` → "statically linked".

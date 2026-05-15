@@ -14,7 +14,7 @@ SHELL := /bin/bash
 # code requires — it's a separate axis from the toolchain version above and
 # is updated only when the code starts using features from a newer Go.
 include .versions
-export GO_VERSION ALPINE_VERSION GOLANGCI_LINT_VERSION
+export GO_VERSION ALPINE_VERSION GOLANGCI_LINT_VERSION GO_IMAGE_DIGEST
 
 # Strip the patch component off GO_VERSION (1.23.4 → 1.23) to get the value
 # go.mod's `go` directive expects. `sync-versions` writes this into go.mod
@@ -38,7 +38,8 @@ TARGET_ARCH  ?= amd64
 BUILD_ARGS := \
     --build-arg GO_VERSION=$(GO_VERSION) \
     --build-arg ALPINE_VERSION=$(ALPINE_VERSION) \
-    --build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION)
+    --build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
+    --build-arg GO_IMAGE_DIGEST=$(GO_IMAGE_DIGEST)
 
 # Run docker as the host user so files written into /src (go.sum, bin/, the
 # coverage profile) stay owned by the host user instead of root.
@@ -64,7 +65,7 @@ DOCKER_RUN := docker run --rm \
     -w /src \
     $(TOOLS_IMAGE)
 
-.PHONY: help tools-image cache-dirs build test lint fmt vet tidy coverage coverage-check image clean all ci sync-versions check-versions
+.PHONY: help tools-image cache-dirs build test lint fmt vet tidy coverage coverage-check image clean all ci sync-versions check-versions vulncheck
 
 cache-dirs:
 	@mkdir -p $(GO_CACHE_HOST) $(GO_MODCACHE_HOST)
@@ -78,18 +79,19 @@ tools-image: cache-dirs ## Build the docker image that holds Go + golangci-lint
 tidy: tools-image sync-versions ## go mod tidy + keep go.mod's `go` directive in sync with .versions
 	$(DOCKER_RUN) go mod tidy
 
-sync-versions: tools-image ## write GO_LANG_VERSION into go.mod's `go` directive
-	$(DOCKER_RUN) go mod edit -go=$(GO_LANG_VERSION)
+sync-versions: tools-image ## write GO_LANG_VERSION + toolchain into go.mod
+	$(DOCKER_RUN) go mod edit -go=$(GO_LANG_VERSION) -toolchain=go$(GO_VERSION)
 
 check-versions: ## fail if go.mod's `go` directive drifts from .versions
-	@actual=$$(grep '^go ' go.mod | awk '{print $$2}'); \
+	@raw=$$(grep '^go ' go.mod | awk '{print $$2}'); \
+	actual=$$(echo "$$raw" | awk -F. '{print $$1"."$$2}'); \
 	expected=$(GO_LANG_VERSION); \
 	if [ "$$actual" != "$$expected" ]; then \
-	  echo "✗ go.mod says 'go $$actual' but .versions implies '$$expected'."; \
+	  echo "✗ go.mod says 'go $$raw' but .versions implies '$$expected'."; \
 	  echo "  Run \`make sync-versions\` (or bump .versions) to align them."; \
 	  exit 1; \
 	fi; \
-	echo "✓ go.mod and .versions agree on Go language version $$expected"
+	echo "✓ go.mod and .versions agree on Go language version $$expected (go.mod: $$raw)"
 
 fmt: tools-image ## gofmt -s -w against project sources (skips .cache)
 	# `go fmt ./...` uses go's package list so it doesn't recurse into
@@ -110,6 +112,18 @@ test: tools-image ## go test with race detector + coverage profile
 coverage: test ## show per-function coverage
 	$(DOCKER_RUN) go tool cover -func=$(COVERAGE_FILE)
 
+# Closes M1 — see reviews/2026-05-15T195833Z-review.md#m1.
+# Vulnerability scan. Pinned to v1.1.4 because @latest now requires Go 1.25.x
+# and we want one knob to bump in a single line when we move Go versions.
+# Reusable across Go 1.24+ toolchains.
+GOVULNCHECK_VERSION ?= v1.1.4
+
+vulncheck: tools-image ## govulncheck against the project — fails on any reachable CVE
+	$(DOCKER_RUN) sh -c '\
+	  mkdir -p /src/.cache/gotools && \
+	  test -x /src/.cache/gotools/govulncheck || GOBIN=/src/.cache/gotools go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) && \
+	  /src/.cache/gotools/govulncheck ./...'
+
 coverage-check: test ## fail if total coverage < $(COVERAGE_MIN_PCT)%
 	@$(DOCKER_RUN) sh -c '\
 	  total=$$(go tool cover -func=$(COVERAGE_FILE) | awk "/^total:/ {gsub(\"%\",\"\",\$$3); print \$$3}"); \
@@ -117,6 +131,16 @@ coverage-check: test ## fail if total coverage < $(COVERAGE_MIN_PCT)%
 	  awk -v t="$$total" -v m=$(COVERAGE_MIN_PCT) "BEGIN { exit !(t+0 >= m+0) }" \
 	    || { echo \"FAIL: coverage $${total}% is below threshold $(COVERAGE_MIN_PCT)%\"; exit 1; }; \
 	  echo "OK: coverage $${total}% meets threshold $(COVERAGE_MIN_PCT)%"'
+
+# Closes M5 — see reviews/2026-05-15T195833Z-review.md#m5.
+# Version stamping. VERSION defaults to git describe (or "dev"); GIT_SHA and
+# BUILD_TIME are computed at make-time. Override on the CLI:
+#   make VERSION=v1.2.3 build
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GIT_SHA   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+VERSION_LDFLAGS := -X main.version=$(VERSION) -X main.gitSHA=$(GIT_SHA) -X main.buildTime=$(BUILD_TIME)
 
 build: tools-image ## compile a static binary into ./bin/ on the host
 	# The Go build runs *inside* the tools container, but `$(BIN_DIR)` is the
@@ -126,13 +150,13 @@ build: tools-image ## compile a static binary into ./bin/ on the host
 	# library deps (verify with `file bin/$(BIN_NAME)` → "statically linked").
 	mkdir -p $(BIN_DIR)
 	$(DOCKER_RUN) env CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) \
-	    go build -trimpath -ldflags="-s -w -extldflags=-static" \
+	    go build -trimpath -ldflags="-s -w -extldflags=-static $(VERSION_LDFLAGS)" \
 	    -o $(BIN_DIR)/$(BIN_NAME) ./cmd/palette-ai-instance
 
 image: ## build the distroless runtime image
 	docker build -t $(RUNTIME_IMAGE) .
 
-ci: check-versions fmt vet lint coverage-check build ## everything CI should run
+ci: check-versions fmt vet lint coverage-check vulncheck build ## everything CI should run
 
 all: ci ## alias for `ci`
 

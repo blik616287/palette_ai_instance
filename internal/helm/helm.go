@@ -80,6 +80,14 @@ type UninstallOptions struct {
 	// KeepHistory leaves the release record in place so a subsequent
 	// `helm history` can see it. Defaults to false (release fully removed).
 	KeepHistory bool
+	// DisableHooks matches helm's `--no-hooks` flag (action.Uninstall.DisableHooks).
+	//
+	// Closes H3 — see reviews/2026-05-15T195833Z-review.md#h3.
+	// Per-release toggle. The mural chart's pre-delete hook Job sometimes
+	// hangs when the install was already partially broken, so cleaner sets
+	// this true for the `mural` release only. Other releases (cert-manager,
+	// queue, mural-crds) want hooks intact for clean teardown.
+	DisableHooks bool
 }
 
 // Validate enforces the fields required for a useful uninstall call.

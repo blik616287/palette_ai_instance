@@ -3,6 +3,7 @@ package cleaner_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,12 @@ func (f *fakeUninstaller) Uninstall(_ context.Context, opts helm.UninstallOption
 	return nil
 }
 
+// Closes L6 — see reviews/2026-05-15T195833Z-review.md#l6.
+// fakeKube is now exercised by parallel goroutines (dropNamespaces uses an
+// errgroup-style worker pool); all shared state goes through a mutex so the
+// race detector stays clean.
 type fakeKube struct {
+	mu             sync.Mutex
 	existing       map[string]bool
 	deletes        []string
 	waits          []string
@@ -40,12 +46,25 @@ type fakeKube struct {
 	delValidating  []string
 	delMutating    []string
 	failOnDeleteNS string
+	// L3 — what the label-selector list methods return. Tests can preload
+	// these to exercise the union behavior; default-empty matches the
+	// hardcoded-list-only behavior the original tests asserted.
+	labeledNamespaces []string
+	labeledValidating []string
+	labeledMutating   []string
+	// labelListErr, when set, makes every List*ByLabel method fail — used
+	// to exercise the cleaner's non-fatal fallback to the static lists.
+	labelListErr error
 }
 
 func (f *fakeKube) NamespaceExists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.existing[name], nil
 }
 func (f *fakeKube) DeleteNamespace(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deletes = append(f.deletes, name)
 	if f.failOnDeleteNS == name {
 		return errors.New("delete boom")
@@ -54,6 +73,8 @@ func (f *fakeKube) DeleteNamespace(_ context.Context, name string) error {
 	return nil
 }
 func (f *fakeKube) WaitForNamespaceGone(_ context.Context, name string, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.waits = append(f.waits, name)
 	if f.timeouts[name] {
 		f.timeouts[name] = false // clear so a follow-up call after finalize succeeds
@@ -62,16 +83,51 @@ func (f *fakeKube) WaitForNamespaceGone(_ context.Context, name string, _ time.D
 	return nil
 }
 func (f *fakeKube) ForceFinalizeNamespace(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.finalized = append(f.finalized, name)
 	return nil
 }
 func (f *fakeKube) DeleteValidatingWebhookConfiguration(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.delValidating = append(f.delValidating, name)
 	return nil
 }
 func (f *fakeKube) DeleteMutatingWebhookConfiguration(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.delMutating = append(f.delMutating, name)
 	return nil
+}
+
+// L3 surface — label-selector list methods. Tests can override via the
+// labeledNamespaces / labeledValidating / labeledMutating fields if a test
+// wants to assert the union behavior; default zero returns are fine for the
+// existing tests because they use the hardcoded list as the source of truth.
+func (f *fakeKube) ListNamespacesByLabel(_ context.Context, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.labelListErr != nil {
+		return nil, f.labelListErr
+	}
+	return append([]string{}, f.labeledNamespaces...), nil
+}
+func (f *fakeKube) ListValidatingWebhooksByLabel(_ context.Context, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.labelListErr != nil {
+		return nil, f.labelListErr
+	}
+	return append([]string{}, f.labeledValidating...), nil
+}
+func (f *fakeKube) ListMutatingWebhooksByLabel(_ context.Context, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.labelListErr != nil {
+		return nil, f.labelListErr
+	}
+	return append([]string{}, f.labeledMutating...), nil
 }
 
 // Validation surface — not exercised by the cleaner; here only so fakeKube
@@ -116,6 +172,15 @@ func TestCleanup_LevelUninstall_DropsAllReleases(t *testing.T) {
 	want := []string{"mural", "mural-crds", "queue", "cert-manager"}
 	if got := releaseNames(h.calls); !equal(got, want) {
 		t.Fatalf("uninstall order/list wrong:\n got %v\nwant %v", got, want)
+	}
+	// Closes H3 — see reviews/2026-05-15T195833Z-review.md#h3.
+	// Only `mural` should have DisableHooks=true; other releases preserve
+	// their hooks for clean teardown.
+	for _, c := range h.calls {
+		want := c.ReleaseName == "mural"
+		if c.DisableHooks != want {
+			t.Errorf("release %q: DisableHooks=%v want %v", c.ReleaseName, c.DisableHooks, want)
+		}
 	}
 }
 
@@ -182,22 +247,68 @@ func TestCleanup_LevelFull_DefaultsToLevelFullWhenLevelEmpty(t *testing.T) {
 	}
 }
 
-func TestCleanup_LevelFull_ForceFinalizeStuckNamespace(t *testing.T) {
+// Closes H2 — see reviews/2026-05-15T195833Z-review.md#h2.
+// LevelFull WITHOUT --force-finalize-stuck must NOT silently force-finalize.
+func TestCleanup_LevelFull_StuckNamespaceErrorsWithoutForceFlag(t *testing.T) {
 	h := &fakeUninstaller{}
 	k := &fakeKube{
 		existing: map[string]bool{"mural-system": true},
-		timeouts: map[string]bool{"mural-system": true}, // first wait times out
+		timeouts: map[string]bool{"mural-system": true},
 	}
 	c := newCleaner(h, k)
 	err := c.Cleanup(context.Background(), cleaner.Request{
 		ClusterName: "local", Level: cleaner.LevelFull,
 		NamespaceWait: 10 * time.Millisecond,
+		// ForceFinalizeStuck intentionally NOT set.
+	})
+	if err == nil {
+		t.Fatal("expected error from stuck namespace without --force-finalize-stuck")
+	}
+	if len(k.finalized) != 0 {
+		t.Fatalf("force-finalize should NOT have fired: %v", k.finalized)
+	}
+}
+
+// Closes H2 — see reviews/2026-05-15T195833Z-review.md#h2.
+// LevelFull WITH --force-finalize-stuck opts back into the old behavior.
+func TestCleanup_LevelFull_ForceFinalizeOptIn(t *testing.T) {
+	h := &fakeUninstaller{}
+	k := &fakeKube{
+		existing: map[string]bool{"mural-system": true},
+		timeouts: map[string]bool{"mural-system": true},
+	}
+	c := newCleaner(h, k)
+	err := c.Cleanup(context.Background(), cleaner.Request{
+		ClusterName: "local", Level: cleaner.LevelFull,
+		NamespaceWait:      10 * time.Millisecond,
+		ForceFinalizeStuck: true,
 	})
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
 	if len(k.finalized) != 1 || k.finalized[0] != "mural-system" {
 		t.Fatalf("force-finalize not invoked: %v", k.finalized)
+	}
+}
+
+// Closes H2 — see reviews/2026-05-15T195833Z-review.md#h2.
+// LevelReset implicitly enables force-finalize (no flag required).
+func TestCleanup_LevelReset_ForceFinalizesImplicitly(t *testing.T) {
+	h := &fakeUninstaller{}
+	k := &fakeKube{
+		existing: map[string]bool{"mural-system": true},
+		timeouts: map[string]bool{"mural-system": true},
+	}
+	c := newCleaner(h, k)
+	err := c.Cleanup(context.Background(), cleaner.Request{
+		ClusterName: "local", Level: cleaner.LevelReset,
+		NamespaceWait: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(k.finalized) != 1 {
+		t.Fatalf("reset should force-finalize implicitly: %v", k.finalized)
 	}
 }
 
@@ -327,6 +438,112 @@ func TestAllLevels_Stable(t *testing.T) {
 	levels := cleaner.AllLevels()
 	if len(levels) != 3 {
 		t.Fatalf("expected 3 levels, got %v", levels)
+	}
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+// Label-discovered namespaces are unioned with the static ancillary list.
+func TestCleanup_LevelFull_LabelDiscoveredNamespacesAreSwept(t *testing.T) {
+	h := &fakeUninstaller{}
+	k := &fakeKube{
+		existing: map[string]bool{
+			"mural-system": true, "discovered-by-label": true,
+		},
+		labeledNamespaces: []string{"discovered-by-label"},
+	}
+	c := newCleaner(h, k)
+	err := c.Cleanup(context.Background(), cleaner.Request{
+		ClusterName: "local", Level: cleaner.LevelFull,
+		NamespaceWait: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	// The label-discovered namespace must have been deleted (in addition to
+	// the static ones).
+	var sawDiscovered bool
+	k.mu.Lock()
+	for _, ns := range k.deletes {
+		if ns == "discovered-by-label" {
+			sawDiscovered = true
+		}
+	}
+	k.mu.Unlock()
+	if !sawDiscovered {
+		t.Fatalf("label-discovered namespace not deleted: %v", k.deletes)
+	}
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+// Label-discovered webhooks merge with the static stale list.
+func TestCleanup_LevelFull_LabelDiscoveredWebhooksAreSwept(t *testing.T) {
+	h := &fakeUninstaller{}
+	k := &fakeKube{
+		labeledValidating: []string{"extra-validator"},
+		labeledMutating:   []string{"extra-mutator"},
+	}
+	c := newCleaner(h, k)
+	err := c.Cleanup(context.Background(), cleaner.Request{
+		ClusterName: "local", Level: cleaner.LevelFull,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	hasName := func(names []string, want string) bool {
+		for _, n := range names {
+			if n == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasName(k.delValidating, "extra-validator") {
+		t.Fatalf("extra-validator not deleted: %v", k.delValidating)
+	}
+	if !hasName(k.delMutating, "extra-mutator") {
+		t.Fatalf("extra-mutator not deleted: %v", k.delMutating)
+	}
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+// A failing label sweep must NOT abort teardown — the cleaner falls back to
+// the static hardcoded lists.
+func TestCleanup_LevelFull_LabelSweepErrorFallsBackToStaticLists(t *testing.T) {
+	h := &fakeUninstaller{}
+	k := &fakeKube{
+		existing:     map[string]bool{"mural-system": true},
+		labelListErr: errors.New("label query boom"),
+	}
+	c := newCleaner(h, k)
+	err := c.Cleanup(context.Background(), cleaner.Request{
+		ClusterName: "local", Level: cleaner.LevelFull,
+		NamespaceWait: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("label sweep failure should be non-fatal, got %v", err)
+	}
+	// Static webhook list must still have been swept despite the label error.
+	if len(k.delValidating) == 0 || len(k.delMutating) == 0 {
+		t.Fatalf("static webhook lists not swept on label-error fallback: v=%v m=%v",
+			k.delValidating, k.delMutating)
+	}
+}
+
+// Closes C2 — see reviews/2026-05-15T195833Z-review.md#c2.
+// A cancelled context must abort before the next helm uninstall fires.
+func TestCleanup_CancelledContextStopsBetweenReleases(t *testing.T) {
+	h := &fakeUninstaller{}
+	c := newCleaner(h, &fakeKube{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.Cleanup(ctx, cleaner.Request{
+		ClusterName: "local", Level: cleaner.LevelUninstall,
+	})
+	if err == nil {
+		t.Fatal("expected ctx error")
+	}
+	if len(h.calls) != 0 {
+		t.Fatalf("no helm calls should have fired before ctx-check, got %v", h.calls)
 	}
 }
 

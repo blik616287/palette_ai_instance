@@ -9,6 +9,7 @@ import (
 )
 
 func TestInstallOptions_Validate(t *testing.T) {
+	t.Parallel()
 	good := helm.InstallOptions{
 		ReleaseName: "mural",
 		Namespace:   "mural-system",
@@ -44,8 +45,8 @@ func TestInstallOptions_Validate(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			o := good
 			tc.mutate(&o)
 			err := o.Validate()
