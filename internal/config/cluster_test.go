@@ -70,6 +70,7 @@ func TestLoad_BadYAML(t *testing.T) {
 }
 
 func TestLoad_Validation(t *testing.T) {
+	t.Parallel()
 	tt := []struct {
 		name string
 		body string
@@ -116,8 +117,8 @@ clusters:
 		},
 	}
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			path := writeConfig(t, tc.body)
 			_, err := config.Load(path)
 			if err == nil {

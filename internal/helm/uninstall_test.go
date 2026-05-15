@@ -12,7 +12,11 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 )
 
+// Closes L8 — see reviews/2026-05-15T195833Z-review.md#l8.
+// Table-driven validation tests run in parallel (top-level + per-subtest).
+// Same pattern applied to TestInstallOptions_Validate and TestLoad_Validation.
 func TestUninstallOptions_Validate(t *testing.T) {
+	t.Parallel()
 	good := UninstallOptions{ReleaseName: "mural", Namespace: "mural-system", Kubeconfig: "/tmp/kc"}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("happy validate: %v", err)
@@ -27,8 +31,8 @@ func TestUninstallOptions_Validate(t *testing.T) {
 		{"no kubeconfig", func(o *UninstallOptions) { o.Kubeconfig = "" }},
 	}
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			o := good
 			tc.mutate(&o)
 			if err := o.Validate(); err == nil || !errors.Is(err, ErrInvalidOptions) {
@@ -123,5 +127,58 @@ func mustStore(t *testing.T, cfg *action.Configuration, rel *release.Release) {
 	t.Helper()
 	if err := cfg.Releases.Create(rel); err != nil {
 		t.Fatalf("seed release: %v", err)
+	}
+}
+
+func TestReleaseExists_UninstalledTailReturnsFalse(t *testing.T) {
+	// An "uninstalled" status (e.g. left over from `helm uninstall --keep-history`)
+	// must NOT report exists=true — otherwise Apply would try `upgrade` and
+	// helm rejects upgrades on uninstalled releases.
+	cfg, _, _ := inMemoryConfig()
+	mustStore(t, cfg, &release.Release{
+		Name: "ghost", Namespace: "ns", Version: 1,
+		Info:  &release.Info{Status: release.StatusUninstalled},
+		Chart: &chart.Chart{Metadata: &chart.Metadata{Name: "ghost", Version: "1.0"}},
+	})
+	exists, err := releaseExists(cfg, "ghost")
+	if err != nil {
+		t.Fatalf("releaseExists: %v", err)
+	}
+	if exists {
+		t.Fatal("expected releaseExists=false for status=uninstalled tail")
+	}
+}
+
+func TestReleaseExists_DeployedTailReturnsTrue(t *testing.T) {
+	cfg, _, _ := inMemoryConfig()
+	mustStore(t, cfg, &release.Release{
+		Name: "live", Namespace: "ns", Version: 1,
+		Info:  &release.Info{Status: release.StatusDeployed},
+		Chart: &chart.Chart{Metadata: &chart.Metadata{Name: "live", Version: "1.0"}},
+	})
+	exists, err := releaseExists(cfg, "live")
+	if err != nil {
+		t.Fatalf("releaseExists: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected releaseExists=true for status=deployed")
+	}
+}
+
+// Closes M6 — see reviews/2026-05-15T195833Z-review.md#m6.
+// Mid-uninstall (status=uninstalling) tail counts the same as fully uninstalled.
+func TestReleaseExists_UninstallingTailReturnsFalse(t *testing.T) {
+	cfg, _, _ := inMemoryConfig()
+	mustStore(t, cfg, &release.Release{
+		Name: "midway", Namespace: "ns", Version: 1,
+		Info:  &release.Info{Status: release.StatusUninstalling},
+		Chart: &chart.Chart{Metadata: &chart.Metadata{Name: "midway", Version: "1.0"}},
+	})
+	exists, err := releaseExists(cfg, "midway")
+	if err != nil {
+		t.Fatalf("releaseExists: %v", err)
+	}
+	if exists {
+		t.Fatal("expected releaseExists=false for status=uninstalling tail")
 	}
 }

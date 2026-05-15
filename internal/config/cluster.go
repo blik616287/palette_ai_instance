@@ -60,7 +60,9 @@ var ErrClusterNotFound = errors.New("cluster not found in config")
 // Load reads and parses cluster_config.yaml at path. Relative kubeconfig
 // paths inside the file are resolved against path's directory.
 func Load(path string) (*ClusterConfig, error) {
-	data, err := os.ReadFile(path)
+	// Closes M3 — see reviews/2026-05-15T195833Z-review.md#m3.
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-supplied --config path; treated as trusted CLI input
+
 	if err != nil {
 		return nil, fmt.Errorf("read cluster config %q: %w", path, err)
 	}
@@ -137,8 +139,14 @@ func resolvePath(baseDir, p string) string {
 
 // isURIScheme returns true for refs that helm/k8s consume directly (oci://,
 // https://, http://). We never want to mangle these into local paths.
+//
+// Closes L4 — see reviews/2026-05-15T195833Z-review.md#l4.
+// `file://` is intentionally *not* in this list: a relative `file://./x.tgz`
+// would otherwise pass through unresolved and helm would look for x.tgz
+// relative to the process CWD instead of the config-file directory — almost
+// never what an operator wants. Use a plain relative path for local charts.
 func isURIScheme(s string) bool {
-	for _, prefix := range []string{"oci://", "https://", "http://", "file://"} {
+	for _, prefix := range []string{"oci://", "https://", "http://"} {
 		if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
 			return true
 		}

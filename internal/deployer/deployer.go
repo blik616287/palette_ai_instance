@@ -98,10 +98,16 @@ func (d *Deployer) Deploy(ctx context.Context, req Request) error {
 	d.logf("targeting cluster %q (kubeconfig=%s namespace=%s)",
 		cluster.Name, cluster.Kubeconfig, cluster.Namespace)
 
-	timeout := req.HelmTimeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
+	// Closes M8 — see reviews/2026-05-15T195833Z-review.md#m8.
+	// HelmTimeout must be positive. A zero/negative value is almost always
+	// "the operator typed --helm-timeout 0 expecting `no timeout`" — but
+	// helm interprets zero as "fail immediately." Reject up front rather
+	// than silently substituting a different value the operator didn't ask
+	// for. The cobra default of 20m applies when --helm-timeout is unset.
+	if req.HelmTimeout <= 0 {
+		return fmt.Errorf("helm timeout must be > 0, got %s", req.HelmTimeout)
 	}
+	timeout := req.HelmTimeout
 
 	if req.CertManagerChartURI != "" {
 		// cert-manager is a cluster-wide prereq, not part of the PaletteAI
@@ -160,11 +166,12 @@ func (d *Deployer) Deploy(ctx context.Context, req Request) error {
 	// The mural chart has two rendering bugs that fix-nil-values papers over.
 	// The post-renderer mirrors ansible/paletteai/fix-nil-values.sh.
 	//
+	// Closes L1 — see reviews/2026-05-15T195833Z-review.md#l1.
 	// Wait is intentionally false: combining helm's wait phase with a
 	// post-renderer trips a race where helm reports "no Ingress with the
 	// name X found" even though the resource is present in the API. The
-	// post-install pod-readiness wait happens out-of-band via kubectl
-	// (see examples/deploy-minikube.sh).
+	// post-install pod-readiness wait happens out-of-band in validate()
+	// below when Request.Validate is set.
 	if err := d.installChart(ctx, cluster, helm.InstallOptions{
 		ReleaseName:  muralReleaseName,
 		Namespace:    cluster.Namespace,

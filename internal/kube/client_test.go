@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -106,6 +107,23 @@ func TestWaitForNamespaceGone_PropagatesGetError(t *testing.T) {
 	err := w.WaitForNamespaceGone(context.Background(), "x", time.Second)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// Closes H4 — see reviews/2026-05-15T195833Z-review.md#h4.
+// When an apiserver call itself times out (returns context.DeadlineExceeded),
+// the wait should surface ErrTimeout, not the raw ctx error.
+func TestWaitForNamespaceGone_APIDeadlineExceededMapsToErrTimeout(t *testing.T) {
+	w, cs := newWithFake()
+	_, _ = cs.CoreV1().Namespaces().Create(context.Background(),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "stuck"}}, metav1.CreateOptions{})
+	cs.PrependReactor("get", "namespaces",
+		func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, context.DeadlineExceeded
+		})
+	err := w.WaitForNamespaceGone(context.Background(), "stuck", 50*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("want ErrTimeout from DeadlineExceeded API error, got %v", err)
 	}
 }
 
@@ -227,19 +245,59 @@ func TestDeleteMutatingWebhookConfiguration(t *testing.T) {
 	}
 }
 
-func TestWaitForPodsReady_PodWithoutPodReadyConditionIsNotReady(t *testing.T) {
-	// Covers the bottom return in isPodReady — a Pod whose Status.Conditions
-	// has no PodReady entry at all should be treated as not-ready (the
-	// wait loop times out instead of bailing as "everything Ready").
+func TestWaitForPodsReady_PendingPodWithoutPodReadyConditionIsNotReady(t *testing.T) {
+	// Covers the bottom return in isPodReady — a pending pod whose
+	// Status.Conditions has no PodReady entry yet should be treated as
+	// not-ready. Pods in terminal phases (Succeeded/Failed) are handled
+	// separately and DO count as ready — see the SucceededPodCountsAsReady
+	// test below.
 	w, cs := newWithFake()
 	_, _ = cs.CoreV1().Pods("ns").Create(context.Background(),
 		&corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-condition", Namespace: "ns"},
-			// Intentionally no Status.Conditions.
+			Status:     corev1.PodStatus{Phase: corev1.PodPending},
 		}, metav1.CreateOptions{})
 	_, err := w.WaitForPodsReady(context.Background(), "ns", 150*time.Millisecond)
 	if !errors.Is(err, ErrTimeout) {
-		t.Fatalf("expected ErrTimeout when pod has no PodReady condition, got %v", err)
+		t.Fatalf("expected ErrTimeout when pending pod has no PodReady condition, got %v", err)
+	}
+}
+
+func TestWaitForPodsReady_TerminalPodsCountAsReady(t *testing.T) {
+	// Helm pre/post-install Hook Jobs leave behind Succeeded pods that
+	// never have a PodReady=True condition. Before this fix, those pods
+	// wedged validate() forever. Now they should count as ready.
+	w, cs := newWithFake()
+	_, _ = cs.CoreV1().Pods("ns").Create(context.Background(),
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "hook-job-pod", Namespace: "ns"},
+			Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
+		}, metav1.CreateOptions{})
+	_, _ = cs.CoreV1().Pods("ns").Create(context.Background(),
+		readyPod("running-pod"), metav1.CreateOptions{})
+	sum, err := w.WaitForPodsReady(context.Background(), "ns", 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForPodsReady: %v", err)
+	}
+	if sum.Ready != 2 || sum.Total != 2 {
+		t.Fatalf("summary: %+v", sum)
+	}
+}
+
+func TestWaitForPodsReady_FailedPodCountsAsReady(t *testing.T) {
+	// Same as above for Failed-phase pods.
+	w, cs := newWithFake()
+	_, _ = cs.CoreV1().Pods("ns").Create(context.Background(),
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "errored-pod", Namespace: "ns"},
+			Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+		}, metav1.CreateOptions{})
+	sum, err := w.WaitForPodsReady(context.Background(), "ns", 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForPodsReady: %v", err)
+	}
+	if sum.Ready != 1 {
+		t.Fatalf("summary: %+v", sum)
 	}
 }
 
@@ -283,6 +341,20 @@ func TestWaitForPodsReady_ListError(t *testing.T) {
 	_, err := w.WaitForPodsReady(context.Background(), "ns", time.Second)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// Closes H4 — see reviews/2026-05-15T195833Z-review.md#h4.
+// A List that itself returns context.DeadlineExceeded must surface as ErrTimeout.
+func TestWaitForPodsReady_APIDeadlineExceededMapsToErrTimeout(t *testing.T) {
+	w, cs := newWithFake()
+	cs.PrependReactor("list", "pods",
+		func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, context.DeadlineExceeded
+		})
+	_, err := w.WaitForPodsReady(context.Background(), "ns", 50*time.Millisecond)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("want ErrTimeout from DeadlineExceeded list error, got %v", err)
 	}
 }
 
@@ -391,6 +463,79 @@ func service(name, portName string, nodePort int32) *corev1.Service {
 			Type:  corev1.ServiceTypeNodePort,
 			Ports: []corev1.ServicePort{{Name: portName, NodePort: nodePort}},
 		},
+	}
+}
+
+// Closes L3 — see reviews/2026-05-15T195833Z-review.md#l3.
+func TestListNamespacesByLabel(t *testing.T) {
+	w, cs := newWithFake()
+	_, _ = cs.CoreV1().Namespaces().Create(context.Background(),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tagged", Labels: map[string]string{"app": "mural"}}},
+		metav1.CreateOptions{})
+	_, _ = cs.CoreV1().Namespaces().Create(context.Background(),
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "untagged"}},
+		metav1.CreateOptions{})
+	got, err := w.ListNamespacesByLabel(context.Background(), "app=mural")
+	if err != nil {
+		t.Fatalf("ListNamespacesByLabel: %v", err)
+	}
+	if len(got) != 1 || got[0] != "tagged" {
+		t.Fatalf("got %v, want [tagged]", got)
+	}
+}
+
+func TestListNamespacesByLabel_PropagatesError(t *testing.T) {
+	w, cs := newWithFake()
+	cs.PrependReactor("list", "namespaces",
+		func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("list boom")
+		})
+	if _, err := w.ListNamespacesByLabel(context.Background(), "x=y"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListValidatingAndMutatingWebhooksByLabel(t *testing.T) {
+	w, cs := newWithFake()
+	// Empty cluster — both should return empty slices, no error.
+	v, err := w.ListValidatingWebhooksByLabel(context.Background(), "x=y")
+	if err != nil || len(v) != 0 {
+		t.Fatalf("validating: got %v err=%v", v, err)
+	}
+	m, err := w.ListMutatingWebhooksByLabel(context.Background(), "x=y")
+	if err != nil || len(m) != 0 {
+		t.Fatalf("mutating: got %v err=%v", m, err)
+	}
+	// Seed one of each and confirm names come back.
+	_, _ = cs.AdmissionregistrationV1().ValidatingWebhookConfigurations().Create(context.Background(),
+		&admissionv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: "vw"}},
+		metav1.CreateOptions{})
+	_, _ = cs.AdmissionregistrationV1().MutatingWebhookConfigurations().Create(context.Background(),
+		&admissionv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: "mw"}},
+		metav1.CreateOptions{})
+	if v, _ := w.ListValidatingWebhooksByLabel(context.Background(), ""); len(v) != 1 || v[0] != "vw" {
+		t.Fatalf("validating list: %v", v)
+	}
+	if m, _ := w.ListMutatingWebhooksByLabel(context.Background(), ""); len(m) != 1 || m[0] != "mw" {
+		t.Fatalf("mutating list: %v", m)
+	}
+}
+
+func TestListWebhooksByLabel_PropagateErrors(t *testing.T) {
+	w, cs := newWithFake()
+	cs.PrependReactor("list", "validatingwebhookconfigurations",
+		func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("vboom")
+		})
+	cs.PrependReactor("list", "mutatingwebhookconfigurations",
+		func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("mboom")
+		})
+	if _, err := w.ListValidatingWebhooksByLabel(context.Background(), "x=y"); err == nil {
+		t.Fatal("expected validating list error")
+	}
+	if _, err := w.ListMutatingWebhooksByLabel(context.Background(), "x=y"); err == nil {
+		t.Fatal("expected mutating list error")
 	}
 }
 

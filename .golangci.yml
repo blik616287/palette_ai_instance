@@ -2,9 +2,15 @@ run:
   timeout: 5m
   tests: true
 
+# Closes M2 — see reviews/2026-05-15T195833Z-review.md#m2.
+# Linter set extended past the baseline with the "gold standard" additions
+# the review called out. The additions catch (a) the failure modes that
+# manual review found this round and (b) defensive coverage for future
+# changes. Each addition is annotated with what it guards.
 linters:
   disable-all: true
   enable:
+    # --- baseline (unchanged) ---
     - errcheck
     - errorlint
     - gocyclo
@@ -22,6 +28,15 @@ linters:
     - unconvert
     - unparam
     - unused
+    # --- M2 additions ---
+    - bodyclose       # unclosed HTTP response bodies (defense for any future direct net/http use)
+    - contextcheck    # functions that take ctx but pass context.Background downstream — would have caught C2
+    - gocritic        # broad pattern set; cheap defaults
+    - nilerr          # returning nil after err != nil check
+    - noctx           # HTTP requests without context
+    - predeclared     # shadowing built-ins (len, new, error)
+    - tparallel       # validates t.Parallel usage in subtests (sibling to paralleltest)
+    - usestdlibvars   # use http.MethodGet etc. over "GET" string literals
 
 linters-settings:
   gocyclo:

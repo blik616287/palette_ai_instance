@@ -43,6 +43,17 @@ func (f *fakeKube) GetServiceNodePort(context.Context, string, string, string) (
 	return f.port, f.portErr
 }
 
+// L3 — list-by-label methods, no-op in deployer tests.
+func (f *fakeKube) ListNamespacesByLabel(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeKube) ListValidatingWebhooksByLabel(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeKube) ListMutatingWebhooksByLabel(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 // ---- fakes ----------------------------------------------------------------
 
 type fakeInstaller struct {
@@ -104,6 +115,7 @@ func TestDeploy_CertManagerSkipCreateNamespace(t *testing.T) {
 		ChartURI:                       "oci://example/mural",
 		CertManagerChartURI:            "oci://example/cert-manager",
 		CertManagerSkipCreateNamespace: true,
+		HelmTimeout:                    5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -127,6 +139,7 @@ func TestDeploy_HappyWithCertManagerAndCRDs(t *testing.T) {
 		CRDsChartURI:          "oci://example/mural-crds",
 		CertManagerChartURI:   "oci://example/cert-manager",
 		CertManagerValuesFile: "cm-values.yaml",
+		HelmTimeout:           5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -161,6 +174,7 @@ func TestDeploy_HappyFullStack_CertManagerQueueCRDsMural(t *testing.T) {
 		QueueChartURI:       "oci://example/rabbitmq",
 		QueueVersion:        "14.6.6",
 		QueueValuesFile:     "queue-values.yaml",
+		HelmTimeout:         5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -201,6 +215,7 @@ func TestDeploy_QueueErrorStopsBeforeMural(t *testing.T) {
 		ClusterName:   "local",
 		ChartURI:      "oci://example/mural",
 		QueueChartURI: "oci://example/rabbitmq",
+		HelmTimeout:   5 * time.Minute,
 	})
 	if err == nil {
 		t.Fatal("expected error from queue install")
@@ -221,6 +236,7 @@ func TestDeploy_CertManagerErrorStopsBeforeCRDs(t *testing.T) {
 		ChartURI:            "oci://example/mural",
 		CRDsChartURI:        "oci://example/mural-crds",
 		CertManagerChartURI: "oci://example/cert-manager",
+		HelmTimeout:         5 * time.Minute,
 	})
 	if err == nil {
 		t.Fatal("expected error from cert-manager install")
@@ -238,6 +254,7 @@ func TestDeploy_HappyNoCRDs(t *testing.T) {
 	err := d.Deploy(context.Background(), deployer.Request{
 		ClusterName: "local",
 		ChartURI:    "oci://example/mural",
+		HelmTimeout: 5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -307,6 +324,7 @@ func TestDeploy_HelmErrorOnCRDs(t *testing.T) {
 	d.ConfigLoader = okLoader
 	err := d.Deploy(context.Background(), deployer.Request{
 		ClusterName: "local", ChartURI: "x", CRDsChartURI: "y",
+		HelmTimeout: 5 * time.Minute,
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("err: %v", err)
@@ -321,7 +339,9 @@ func TestDeploy_HelmErrorOnMural(t *testing.T) {
 	h := &fakeInstaller{err: want, errOnce: "mural"}
 	d := deployer.New(h, nil)
 	d.ConfigLoader = okLoader
-	err := d.Deploy(context.Background(), deployer.Request{ClusterName: "local", ChartURI: "x"})
+	err := d.Deploy(context.Background(), deployer.Request{
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 5 * time.Minute,
+	})
 	if !errors.Is(err, want) {
 		t.Fatalf("err: %v", err)
 	}
@@ -343,7 +363,8 @@ func TestDeploy_ValidateHappyPath(t *testing.T) {
 
 	err := d.Deploy(context.Background(), deployer.Request{
 		ClusterName: "local", ChartURI: "x",
-		Validate: true, ValidateWait: 50 * time.Millisecond,
+		HelmTimeout: 5 * time.Minute,
+		Validate:    true, ValidateWait: 50 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
@@ -370,7 +391,7 @@ func TestDeploy_ValidateWaitError(t *testing.T) {
 	d.ConfigLoader = okLoader
 	d.Kube = func(_, _ string) (kube.Client, error) { return k, nil }
 	err := d.Deploy(context.Background(), deployer.Request{
-		ClusterName: "local", ChartURI: "x", Validate: true,
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 5 * time.Minute, Validate: true,
 	})
 	if err == nil {
 		t.Fatal("expected error from wait failure")
@@ -382,7 +403,7 @@ func TestDeploy_ValidateNilKubeBuilder(t *testing.T) {
 	d.ConfigLoader = okLoader
 	d.Kube = nil
 	err := d.Deploy(context.Background(), deployer.Request{
-		ClusterName: "local", ChartURI: "x", Validate: true,
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 5 * time.Minute, Validate: true,
 	})
 	if err == nil {
 		t.Fatal("expected error when Kube builder is nil")
@@ -394,7 +415,7 @@ func TestDeploy_ValidateKubeBuilderError(t *testing.T) {
 	d.ConfigLoader = okLoader
 	d.Kube = func(_, _ string) (kube.Client, error) { return nil, errors.New("kube boom") }
 	err := d.Deploy(context.Background(), deployer.Request{
-		ClusterName: "local", ChartURI: "x", Validate: true,
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 5 * time.Minute, Validate: true,
 	})
 	if err == nil {
 		t.Fatal("expected error from kube builder")
@@ -411,7 +432,7 @@ func TestDeploy_ValidateIngressLookupError(t *testing.T) {
 		}, nil
 	}
 	err := d.Deploy(context.Background(), deployer.Request{
-		ClusterName: "local", ChartURI: "x", Validate: true,
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 5 * time.Minute, Validate: true,
 	})
 	if err == nil {
 		t.Fatal("expected error from ingress lookup")
@@ -429,22 +450,43 @@ func TestDeploy_ValidateServiceLookupError(t *testing.T) {
 		}, nil
 	}
 	err := d.Deploy(context.Background(), deployer.Request{
-		ClusterName: "local", ChartURI: "x", Validate: true,
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 5 * time.Minute, Validate: true,
 	})
 	if err == nil {
 		t.Fatal("expected error from service lookup")
 	}
 }
 
-func TestDeploy_DefaultTimeoutApplied(t *testing.T) {
+func TestDeploy_RejectsZeroHelmTimeout(t *testing.T) {
+	// Previously the deployer silently substituted a 20m default when
+	// HelmTimeout <= 0. That made `--helm-timeout 0` mean "20m" — surprising.
+	// Now the deployer rejects, leaving the cobra default of 20m as the
+	// only "no override" path.
 	h := &fakeInstaller{}
 	d := deployer.New(h, nil)
 	d.ConfigLoader = okLoader
-	err := d.Deploy(context.Background(), deployer.Request{ClusterName: "local", ChartURI: "x"})
+	err := d.Deploy(context.Background(), deployer.Request{
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 0,
+	})
+	if err == nil {
+		t.Fatal("expected error for HelmTimeout=0")
+	}
+	if len(h.calls) != 0 {
+		t.Fatalf("no helm calls should have been made, got %v", h.calls)
+	}
+}
+
+func TestDeploy_PropagatesPositiveTimeout(t *testing.T) {
+	h := &fakeInstaller{}
+	d := deployer.New(h, nil)
+	d.ConfigLoader = okLoader
+	err := d.Deploy(context.Background(), deployer.Request{
+		ClusterName: "local", ChartURI: "x", HelmTimeout: 7 * time.Minute,
+	})
 	if err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
-	if h.calls[0].Timeout == 0 {
-		t.Fatalf("expected default timeout to be applied")
+	if h.calls[0].Timeout != 7*time.Minute {
+		t.Fatalf("got timeout %s, want 7m", h.calls[0].Timeout)
 	}
 }

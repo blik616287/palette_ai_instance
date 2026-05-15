@@ -123,7 +123,17 @@ func (s *SDKInstaller) logf(format string, args ...any) {
 
 // Uninstall removes a release. A release that doesn't exist returns
 // ErrReleaseNotFound so the caller can treat it as a no-op.
-func (s *SDKInstaller) Uninstall(_ context.Context, opts UninstallOptions) error {
+//
+// Closes C2 + H3 — see reviews/2026-05-15T195833Z-review.md#c2, …#h3.
+// Helm's action.Uninstall.Run doesn't take a ctx — but we still check
+// ctx.Err() at entry and just before invoking Run, so a SIGINT during a
+// long sequence of uninstalls aborts at the next release boundary instead
+// of being silently ignored (C2). DisableHooks is no longer hardcoded;
+// callers opt in per-release via UninstallOptions.DisableHooks (H3).
+func (s *SDKInstaller) Uninstall(ctx context.Context, opts UninstallOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := opts.Validate(); err != nil {
 		return err
 	}
@@ -154,13 +164,11 @@ func (s *SDKInstaller) Uninstall(_ context.Context, opts UninstallOptions) error
 	un := action.NewUninstall(cfg)
 	un.KeepHistory = opts.KeepHistory
 	un.Timeout = opts.Timeout
-	// `DisableHooks: true` matches helm's `--no-hooks` flag. We turn it on
-	// because the mural chart's pre-delete hook job often hangs when the
-	// install was already partially broken — same lesson the Ansible role
-	// learned the hard way. The cleaner deletes the namespace afterwards
-	// anyway, so skipping hooks is safe.
-	un.DisableHooks = true
+	un.DisableHooks = opts.DisableHooks
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.logf("uninstalling release %q in namespace %q", opts.ReleaseName, opts.Namespace)
 	if _, err := un.Run(opts.ReleaseName); err != nil {
 		return fmt.Errorf("helm uninstall %q: %w", opts.ReleaseName, err)
@@ -203,20 +211,36 @@ func loadValues(path string, sets []string, env *helmcli.EnvSettings) (map[strin
 	return vals, nil
 }
 
-// releaseExists returns true when the named release has at least one revision
-// recorded in the namespace targeted by cfg.
+// releaseExists returns true when the named release has at least one
+// *active* revision (status deployed or in-flight) in the namespace targeted
+// by cfg.
+//
+// Closes M6 — see reviews/2026-05-15T195833Z-review.md#m6.
+// Uninstalled-with-kept-history releases return false so Apply can re-install
+// over them — helm refuses to `upgrade` a release whose latest revision has
+// status "uninstalled".
 func releaseExists(cfg *action.Configuration, name string) (bool, error) {
 	hist := action.NewHistory(cfg)
-	hist.Max = 1
-	_, err := hist.Run(name)
+	rels, err := hist.Run(name)
 	switch {
-	case err == nil:
-		return true, nil
 	case errors.Is(err, driver.ErrReleaseNotFound):
 		return false, nil
-	default:
+	case err != nil:
 		return false, fmt.Errorf("query release history: %w", err)
 	}
+	// hist.Run returns revisions in ascending-revision order; we care about
+	// the latest one's status. An "uninstalled" tail means there's no live
+	// release to upgrade, even though history exists. Info is always set
+	// by helm's storage layer (it carries the status secret labels) so we
+	// don't guard for nil here.
+	if len(rels) == 0 {
+		return false, nil
+	}
+	switch rels[len(rels)-1].Info.Status {
+	case release.StatusUninstalled, release.StatusUninstalling:
+		return false, nil
+	}
+	return true, nil
 }
 
 func runInstall(ctx context.Context, cfg *action.Configuration, opts InstallOptions,

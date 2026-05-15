@@ -94,16 +94,18 @@ type flagSetCheck func(name string) bool
 
 // runDeployCmd loads cluster_config, narrows to one cluster (or all), and
 // dispatches one deployer.Request per cluster.
-func runDeployCmd(cmd *cobra.Command, f *deployFlags, run deployRunner, out, errOut io.Writer) error {
+//
+// Closes C3 — see reviews/2026-05-15T195833Z-review.md#c3.
+// main.go is the single stderr sink: we return errors verbatim and let it
+// print one "error: ..." line instead of double-printing here too.
+func runDeployCmd(cmd *cobra.Command, f *deployFlags, run deployRunner, out, _ io.Writer) error {
 	cfg, err := config.Load(f.configPath)
 	if err != nil {
-		fmt.Fprintln(errOut, "error:", err)
 		return err
 	}
 
 	clusters, err := selectClusters(cfg, f.clusterName)
 	if err != nil {
-		fmt.Fprintln(errOut, "error:", err)
 		return err
 	}
 
@@ -112,7 +114,11 @@ func runDeployCmd(cmd *cobra.Command, f *deployFlags, run deployRunner, out, err
 		req := mergeDeployRequest(cmd.Flags().Changed, f, &cluster)
 		fmt.Fprintf(out, "→ deploying cluster %q (%d/%d)\n", cluster.Name, i+1, len(clusters))
 		if err := run(cmd.Context(), req, out); err != nil {
-			return fmt.Errorf("cluster %q: %w", cluster.Name, err)
+			// Closes H5 — see reviews/2026-05-15T195833Z-review.md#h5.
+			// The "→ deploying cluster X" line above carries cluster ID,
+			// and the deployer already wraps per-step; re-wrapping with
+			// `cluster %q` here double-stamps.
+			return err
 		}
 	}
 	return nil

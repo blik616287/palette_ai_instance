@@ -17,12 +17,13 @@ import (
 // cleanupFlags is the raw flag-bound input. Unlike deploy, cleanup options
 // are CLI-only — destructive defaults can't lurk in cluster_config.yaml.
 type cleanupFlags struct {
-	configPath      string
-	clusterName     string
-	level           string
-	keepCertManager bool
-	keepQueue       bool
-	namespaceWait   time.Duration
+	configPath         string
+	clusterName        string
+	level              string
+	keepCertManager    bool
+	keepQueue          bool
+	namespaceWait      time.Duration
+	forceFinalizeStuck bool
 }
 
 // cleanupRunner is the seam tests use to inject a fake cleaner.
@@ -68,8 +69,12 @@ func newCleanupCmd(out, errOut io.Writer, run cleanupRunner) *cobra.Command {
 		"don't uninstall cert-manager (use when it's shared with other tenants)")
 	flags.BoolVar(&f.keepQueue, "keep-queue", false,
 		"don't uninstall the messaging-queue release")
-	flags.DurationVar(&f.namespaceWait, "namespace-wait", 3*time.Minute,
-		"per-namespace deletion deadline before force-finalizing")
+	flags.DurationVar(&f.namespaceWait, "namespace-wait", 10*time.Minute,
+		"per-namespace deletion deadline before erroring (or force-finalizing if --force-finalize-stuck)")
+	flags.BoolVar(&f.forceFinalizeStuck, "force-finalize-stuck", false,
+		"DANGEROUS: when a namespace is stuck Terminating past --namespace-wait, clear "+
+			"spec.finalizers via /finalize. Can orphan cluster-scoped resources whose "+
+			"controllers were still draining. Implicit at --level reset.")
 
 	_ = cmd.MarkFlagRequired("config")
 	return cmd
@@ -77,15 +82,17 @@ func newCleanupCmd(out, errOut io.Writer, run cleanupRunner) *cobra.Command {
 
 // runCleanupCmd loads cluster_config, narrows to one cluster (or all), and
 // dispatches one cleaner.Request per cluster.
-func runCleanupCmd(cmd *cobra.Command, f *cleanupFlags, run cleanupRunner, out, errOut io.Writer) error {
+//
+// Closes C3 — see reviews/2026-05-15T195833Z-review.md#c3.
+// main.go is the single stderr sink: we return errors verbatim and let it
+// print one "error: ..." line instead of double-printing here too.
+func runCleanupCmd(cmd *cobra.Command, f *cleanupFlags, run cleanupRunner, out, _ io.Writer) error {
 	cfg, err := config.Load(f.configPath)
 	if err != nil {
-		fmt.Fprintln(errOut, "error:", err)
 		return err
 	}
 	clusters, err := selectClusters(cfg, f.clusterName)
 	if err != nil {
-		fmt.Fprintln(errOut, "error:", err)
 		return err
 	}
 
@@ -95,7 +102,10 @@ func runCleanupCmd(cmd *cobra.Command, f *cleanupFlags, run cleanupRunner, out, 
 		fmt.Fprintf(out, "→ cleaning cluster %q (%d/%d, level=%s)\n",
 			cluster.Name, i+1, len(clusters), req.Level)
 		if err := run(cmd.Context(), req, out); err != nil {
-			return fmt.Errorf("cluster %q: %w", cluster.Name, err)
+			// Closes H5 — see reviews/2026-05-15T195833Z-review.md#h5.
+			// "→ cleaning cluster X" above carries cluster ID; cleaner
+			// wraps per-step. Re-wrapping with `cluster %q` double-stamps.
+			return err
 		}
 	}
 	return nil
@@ -106,12 +116,13 @@ func runCleanupCmd(cmd *cobra.Command, f *cleanupFlags, run cleanupRunner, out, 
 // participate — see the package doc on Cluster for the rationale.
 func buildCleanupRequest(f *cleanupFlags, cluster *config.Cluster) cleaner.Request {
 	return cleaner.Request{
-		ConfigPath:      f.configPath,
-		ClusterName:     cluster.Name,
-		Level:           cleaner.Level(strings.ToLower(strings.TrimSpace(f.level))),
-		KeepCertManager: f.keepCertManager,
-		KeepQueue:       f.keepQueue,
-		NamespaceWait:   f.namespaceWait,
+		ConfigPath:         f.configPath,
+		ClusterName:        cluster.Name,
+		Level:              cleaner.Level(strings.ToLower(strings.TrimSpace(f.level))),
+		KeepCertManager:    f.keepCertManager,
+		KeepQueue:          f.keepQueue,
+		NamespaceWait:      f.namespaceWait,
+		ForceFinalizeStuck: f.forceFinalizeStuck,
 	}
 }
 
