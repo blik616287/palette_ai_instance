@@ -2,7 +2,12 @@ bin/
 coverage.out
 *.test
 .cache/
+# Operators' real per-cluster configs (real kubeconfig paths, possibly
+# secrets) stay out of git...
 cluster_config.yaml
+# ...but the committed reference example under examples/ is the exception —
+# examples/README.md and the top-level README both point at it.
+!examples/cluster_config.yaml
 # local_k8s playbooks land the minikube kubeconfig under artifacts/; it
 # embeds cluster credentials so the whole directory is gitignored.
 examples/local_k8s/artifacts/

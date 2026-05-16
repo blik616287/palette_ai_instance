@@ -1,0 +1,62 @@
+# Reference cluster_config.yaml — day-1 PaletteAI deploy onto local minikube.
+#
+# This is the file examples/README.md and the top-level README refer to.
+# `palette-ai-instance deploy --config examples/cluster_config.yaml` reads it.
+#
+# Every relative path below resolves from THIS file's directory (examples/),
+# not the shell's CWD — so `mural-1.1.0-rc.0.tgz` means
+# `examples/mural-1.1.0-rc.0.tgz`. `oci://` and `https://` URIs pass through
+# verbatim. See internal/config/cluster.go:resolvePath.
+#
+# The deploy installs four helm releases, in order, each skipped only if its
+# chart URI is left blank:
+#   1. cert-manager  → namespace `cert-manager`   (cluster-wide prereq)
+#   2. queue (RabbitMQ) → namespace `messaging`   (durable messaging)
+#   3. mural-crds    → namespace `mural-system`
+#   4. mural         → namespace `mural-system`
+# cert-manager and queue ARE populated below precisely so a smoke-test deploy
+# exercises them — blank them out only if your cluster already has them.
+
+clusters:
+  - name: local
+    # Written by examples/local_k8s/up.yml. Gitignored (embeds credentials).
+    kubeconfig: local_k8s/artifacts/kubeconfig
+    # kubeconfig context — minikube names it after the profile ("local").
+    context: local
+    # Namespace the mural + mural-crds releases land in.
+    namespace: mural-system
+
+    # Per-cluster defaults for the optional `deploy` flags. A CLI flag that
+    # the operator explicitly sets overrides the matching key here; anything
+    # unset falls through to these values. (cleanup has no such block — see
+    # the note at the bottom of examples/README.md.)
+    deploy:
+      # --- mural (the PaletteAI hub chart) -------------------------------
+      chart-uri:   mural-1.1.0-rc.0.tgz
+      values-file: values-mural-minikube.yaml
+
+      # --- mural-crds (installed before mural) ---------------------------
+      crds-chart-uri: mural-crds-0.7.1.tgz
+
+      # --- cert-manager (cluster-wide prereq, installed first) -----------
+      # Upstream Jetstack chart pulled over HTTPS. The version is pinned in
+      # the URL, so no separate cert-manager-version key is needed.
+      cert-manager-chart-uri:   https://charts.jetstack.io/charts/cert-manager-v1.16.2.tgz
+      cert-manager-values-file: values-cert-manager.yaml
+
+      # --- messaging queue (Bitnami RabbitMQ) ----------------------------
+      # OCI ref — version MUST be given separately (it's not in the URI).
+      queue-chart-uri:   oci://registry-1.docker.io/bitnamicharts/rabbitmq
+      queue-version:     "14.6.6"
+      queue-values-file: values-rabbitmq.yaml
+
+      # --- helm + post-install behavior ----------------------------------
+      # Per-release helm timeout. 20m is the cobra default; pinned here so
+      # the example is self-documenting. Must be > 0.
+      helm-timeout: 20m
+      # After the install, wait for pods Ready in `mural-system`, then read
+      # the dex Ingress + ingress-nginx Service to print the public URL.
+      # (validate only inspects the mural namespace — see examples/README.md
+      # "Verify the prereqs" for how to confirm cert-manager + RabbitMQ.)
+      validate:      true
+      validate-wait: 10m
