@@ -157,3 +157,7 @@ Package layout:
 | `internal/helm` | helm SDK wrapper behind an `Installer` / `Uninstaller` interface |
 | `internal/kube` | client-go wrapper used by `--validate` and the cleaner |
 | `internal/postrender` | the `fix-nil-values` post-renderer that patches the rendered mural manifests in flight |
+
+## License
+
+[MIT](LICENSE) © 2026 Martin Forde <mforde84@gmail.com>, [Blik Labs](https://bliklabs.com).
